@@ -46,12 +46,19 @@
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
 
+TIM_HandleTypeDef htim1;
+
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 
-int8_t output[10];
+  
 uint8_t input[10];
+int8_t output[sizeof(input)];
+uint8_t data[2];
+uint8_t data_index =0;
+uint8_t counter =0;
+uint8_t flag=0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -59,6 +66,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -87,24 +95,27 @@ static void MX_USART1_UART_Init(void);
 			}
 		}
 		
-void Set_Value(int8_t output[], uint8_t size, I2C_HandleTypeDef *hi2c) {
-    uint16_t dac_value;
-//	int8_t out []= {1,0, 1, 0,1,1,0,0,1,0};
-    for (uint8_t i = 0; i < size; i++) {
-        if (output[i] == -1) {
-            dac_value = 0x0000;   
-        } else if (output[i] == 0) {
-            dac_value = 0x0800;  
-        } else {
-            dac_value = 0x0FFF;   
-        }
+void Set_Value(int8_t output, I2C_HandleTypeDef *hi2c) 
+{
 
+				uint16_t dac_value;
+        if (output == -1) 
+					{
+            dac_value = 0x0000;
+					} 
+				else if (output == 0)
+					{
+            dac_value = 0x0800;  
+					} 
+				else
+					{
+            dac_value = 0x0FFF;   
+					}
+				 // Debug giá tri DAC
         char msg[30];
         sprintf(msg, "DAC Value: %04X\r\n", dac_value);
         HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
 				
-				
-				uint8_t data[2];
 				data[0] = (dac_value >> 8) & 0xFF;
 				data[1] =  dac_value  & 0xFF;
 			  
@@ -112,20 +123,6 @@ void Set_Value(int8_t output[], uint8_t size, I2C_HandleTypeDef *hi2c) {
 				{
 					Error_Handler();
 				}
-				
-//				 // Debug loi I2C
-//				char msg[30];
-//				uint16_t  status = HAL_OK;
-//        if (status != HAL_OK) {
-//            sprintf(msg, "I2C Error: %d\r\n", status);
-//            HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
-//        }
-
-				// dang gap van de xuat ra i2c
-				
-//				HAL_Delay(100);
-
-    }
 		
 }
 
@@ -133,32 +130,61 @@ void Set_Value(int8_t output[], uint8_t size, I2C_HandleTypeDef *hi2c) {
 		void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		{
 			if(huart->Instance == huart1.Instance)
-			{
-	//				HAL_UART_Receive_IT(&huart1, input, sizeof(input));
+			{		
+					B2ZS_coding(input, output, sizeof(input));
 				
-//for (uint8_t i = 0; i < 10; i++) {
-//    char msg[15];
-//    sprintf(msg, "RX: %d ", input[i]);
-//    HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
-//}
-//HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2, HAL_MAX_DELAY);
-//	
+//				flag =1;
+					HAL_TIM_Base_Start_IT(&htim1);
 				
-					B2ZS_coding(input, output, 10);
-				
-//				for (uint8_t i = 0; i < 10; i++) 
-//				{
-//					char msg[15];
-//					sprintf(msg, "%d ", output[i]);
-//					HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
-//				}
-//					HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2, HAL_MAX_DELAY); 
 
-					Set_Value(output, 10, &hi2c1);
 					HAL_UART_Receive_IT(&huart1, input, sizeof(input));
-					//HAL_Delay(1000); 	
+						
 			}
 		}
+		
+
+		
+
+		
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+	if(htim->Instance==htim1.Instance)
+	{
+		if(counter <1)
+		{
+			
+				Set_Value(output[data_index], &hi2c1);
+			  counter++;
+			
+		}
+		else if(counter >=1 && counter <2)
+		{ 
+			int8_t output1 = 0;
+			Set_Value(output1, &hi2c1);
+			counter ++;
+		}
+		else
+		{
+			// gui bit tiep theo
+			counter =0;
+			if(data_index<sizeof(input)-2)
+			{
+				data_index++;
+				Set_Value(output[data_index], &hi2c1);
+			  counter++;
+			}
+			else
+			{
+					data_index =0;
+				HAL_TIM_Base_Stop(&htim1);
+			}
+			
+			
+		}
+		
+		
+	}
+}
 
 /* USER CODE END 0 */
 
@@ -193,9 +219,11 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_USART1_UART_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
 	HAL_UART_Receive_IT(&huart1, input, sizeof(input));
 	
+  
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -205,6 +233,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
     }
   /* USER CODE END 3 */
 }
@@ -283,6 +312,52 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 8;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 999;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -298,7 +373,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
