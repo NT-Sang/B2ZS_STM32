@@ -36,10 +36,12 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#include <stdio.h>
+#include "stdio.h"
+#include <stdarg.h>
 #include <string.h>
 
 #define Address_device 0x60<<1
+
 
 /* USER CODE END PM */
 
@@ -51,14 +53,34 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+void my_printf (const char* format, ... )
+{
+    va_list args;
+    va_start (args, format);
 
-  
-uint8_t input[10];
-int8_t output[sizeof(input)];
+    char buffer[256];
+    vsnprintf (buffer, sizeof (buffer), format, args);
+
+    // Gui du lieu qua UART
+    HAL_UART_Transmit (&huart1, (uint8_t*) buffer, strlen (buffer), HAL_MAX_DELAY) ;
+
+    va_end (args);
+}
+
+
+uint8_t input[40];
+uint8_t dodai_data[16]={0};
+uint8_t header[8] = {1,1,1,1,1,1,1,1};
+
+int8_t output[sizeof(input) + sizeof(dodai_data)+sizeof(header)];
+int8_t b2zs_ouput[sizeof(input) + sizeof(dodai_data)+sizeof(header)]={0};
+
 uint8_t data[2];
 uint8_t data_index =0;
 uint8_t counter =0;
-uint8_t flag=0;
+
+volatile uint8_t i2c_tx_ready = 1;  
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -74,36 +96,71 @@ static void MX_TIM1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-		void B2ZS_coding(uint8_t input[], int8_t output[], uint8_t size) {
+void dodai(int size)
+{
+
+  uint8_t sodu =0;
+  uint8_t i =0;
+  while(size!=0){
+      sodu = size%2;
+      size=size/2;
+      dodai_data[sizeof(dodai_data)-i-1]=sodu;
+      i++;
+  }
+}
+
+		void B2ZS_coding(uint8_t input[], uint8_t size) {
+			dodai(size);
+			
+	
+			for(int i= 0; i<sizeof(header);i++)
+            {
+                output[i] = header[i];
+            }
+            for(int i= 0; i<sizeof(dodai_data);i++)
+            {
+                output[i+sizeof(header)] = dodai_data[i];
+            }
+            for(int i= 0; i<size;i++)
+            {
+                output[i+sizeof(header)+ sizeof(dodai_data)] = input[i];
+            }
+			
+			
 			int8_t last_polarity = -1; 
 
-			for (uint8_t i = 0; i < size; i++) {
-					if (input[i] == 49) {
+			for (uint8_t i = 0; i < sizeof(output); i++) {
+					if (output[i] == 1) {
 							last_polarity = -last_polarity;  
-							output[i] = last_polarity;
+							b2zs_ouput[i] = last_polarity;
+						
 					}
-					else if (i < size - 1 && input[i] == 48 && input[i + 1] == 48) {
+					else if (i < sizeof(output) - 1 && output[i] == 0 && output[i + 1] == 0) {
 							last_polarity = -last_polarity;  
-							output[i] = last_polarity;
-							output[i + 1] = last_polarity; 
+							b2zs_ouput[i] = last_polarity;
+											
+							b2zs_ouput[i + 1] = last_polarity; 
+		
 							i++;
-							//continue;
+							
 					}
 					else {
-							output[i] = 0;
+              b2zs_ouput[i] = 0;
+											
 					}
 			}
 		}
 		
-void Set_Value(int8_t output, I2C_HandleTypeDef *hi2c) 
+		
+void Set_Value(int8_t b2zs_ouput, I2C_HandleTypeDef *hi2c) 
 {
 
 				uint16_t dac_value;
-        if (output == -1) 
+        if (b2zs_ouput == -1) 
 					{
             dac_value = 0x0000;
 					} 
-				else if (output == 0)
+				else if (b2zs_ouput == 0)
 					{
             dac_value = 0x0800;  
 					} 
@@ -112,32 +169,59 @@ void Set_Value(int8_t output, I2C_HandleTypeDef *hi2c)
             dac_value = 0x0FFF;   
 					}
 				 // Debug giá tri DAC
-        char msg[30];
-        sprintf(msg, "DAC Value: %04X\r\n", dac_value);
-        HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+//        char msg[30];
+//        sprintf(msg, "DAC Value: %04X\r\n", dac_value);
+//        HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
 				
 				data[0] = (dac_value >> 8) & 0xFF;
 				data[1] =  dac_value  & 0xFF;
 			  
-				if(HAL_I2C_Master_Transmit(&hi2c1, Address_device, data, 2, 100)!= HAL_OK)
-				{
-					Error_Handler();
-				}
+				 if (i2c_tx_ready) {
+        i2c_tx_ready = 0;
+        if (HAL_I2C_Master_Transmit_IT(&hi2c1, Address_device, data, 2) != HAL_OK) {
+            Error_Handler();
+        }
+    }
 		
 }
 
     
-		void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 		{
 			if(huart->Instance == huart1.Instance)
 			{		
-					B2ZS_coding(input, output, sizeof(input));
+				for(uint8_t i=0;i<sizeof(input);i++)
+				{
+					if(input[i]=='1')
+					{
+						input[i]=1;
+					}
+					else
+					{
+						input[i]=0;
+					}
+				}
 				
-//				flag =1;
+			
+					B2ZS_coding(input, sizeof(input));
+				
+//				for(int i=0; i<sizeof(output);i++)
+//    {
+//     my_printf("%d ",(int)output[i]);
+//    }
+//    my_printf("\n");
+//		for(int i=0; i<sizeof(b2zs_ouput);i++)
+//    {
+//     my_printf("%d ",(int)b2zs_ouput[i]);
+//    }
+//		my_printf("\n");
+		
+		
+		
 					HAL_TIM_Base_Start_IT(&htim1);
 				
 
-					HAL_UART_Receive_IT(&huart1, input, sizeof(input));
+				
 						
 			}
 		}
@@ -147,36 +231,39 @@ void Set_Value(int8_t output, I2C_HandleTypeDef *hi2c)
 
 		
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
+{ 
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
 	if(htim->Instance==htim1.Instance)
 	{
-		if(counter <1)
+		if(counter <40)
 		{
 			
-				Set_Value(output[data_index], &hi2c1);
+				Set_Value(b2zs_ouput[data_index], &hi2c1);
 			  counter++;
 			
 		}
-		else if(counter >=1 && counter <2)
+		else if(counter >=40 && counter <80)
 		{ 
-			int8_t output1 = 0;
-			Set_Value(output1, &hi2c1);
+			int8_t output8 = 0;
+			Set_Value(output8, &hi2c1);
 			counter ++;
 		}
 		else
 		{
 			// gui bit tiep theo
 			counter =0;
-			if(data_index<sizeof(input)-2)
+			if(data_index<=sizeof(input) + sizeof(dodai_data)+sizeof(header)-2)
 			{
 				data_index++;
-				Set_Value(output[data_index], &hi2c1);
+				Set_Value(b2zs_ouput[data_index], &hi2c1);
 			  counter++;
 			}
 			else
 			{
 					data_index =0;
 				HAL_TIM_Base_Stop(&htim1);
+				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+					HAL_UART_Receive_IT(&huart1, input, sizeof(input));
 			}
 			
 			
@@ -185,7 +272,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		
 	}
 }
-
+void HAL_I2C_MasterTxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c->Instance == hi2c1.Instance) {
+        i2c_tx_ready = 1;
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -330,9 +422,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 8;
+  htim1.Init.Prescaler = 71;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 999;
+  htim1.Init.Period = 124;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
